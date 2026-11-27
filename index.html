@@ -16,7 +16,7 @@
         .panel { background: #2a2a35; border-radius: 12px; padding: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); border: 1px solid #3a3a4a; }
         .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
         select, button, input[type="text"] { width: 100%; padding: 10px; border-radius: 6px; border: none; background: #3e3e56; color: white; font-weight: bold; font-size: 0.9rem; }
-        input[type="text"] { background: #15151c; border: 1px solid #555; text-align: center; letter-spacing: 1px; }
+        input[type="text"] { background: #15151c; border: 1px solid #555; text-align: center; letter-spacing: 1px; text-transform: uppercase; }
         button { cursor: pointer; transition: background 0.2s; }
         button.btn-primary { background: #27ae60; grid-column: span 2; }
         button.btn-primary:hover { background: #2ecc71; }
@@ -90,7 +90,7 @@
             </div>
             <div style="font-size: 0.8rem; color: #e67e22; font-weight: bold; margin-top: 4px;">2. Ou cole o código do colega (Você = Pretas):</div>
             <div class="online-row">
-                <input type="text" id="friendIdInput" placeholder="Código do colega">
+                <input type="text" id="friendIdInput" placeholder="Ex: XAD-9A2B">
                 <button class="btn-online" style="width: auto; padding: 8px 12px;" onclick="connectToFriend()">Entrar</button>
             </div>
         </div>
@@ -134,7 +134,7 @@
     let gameActive = false, gameMode = 'human', hintsEnabled = true;
     let whiteTimeLeft = 600, blackTimeLeft = 600, timerInterval = null;
 
-    // Variáveis Multiplayer Online (PeerJS)
+    // Variáveis Multiplayer Online (PeerJS com servidores STUN do Google)
     let peer = null, conn = null, myOnlineColor = null;
 
     const boardEl = document.getElementById('board');
@@ -150,40 +150,66 @@
     const piecesSymbols = { 'r': '♜', 'n': '♞', 'b': '♝', 'q': '♛', 'k': '♚', 'p': '♟', 'R': '♖', 'N': '♘', 'B': '♗', 'Q': '♕', 'K': '♔', 'P': '♙' };
     const pieceValues = { 'p': 1, 'n': 3, 'b': 3, 'r': 5, 'q': 9, 'k': 0, 'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0 };
 
-    // Configuração PeerJS para gerar código curto de 5 letras
     function initOnlinePeer() {
-        if (peer) return;
+        if (peer && !peer.destroyed) return;
         const shortId = 'XAD-' + Math.random().toString(36).substring(2, 6).toUpperCase();
-        peer = new Peer(shortId);
+        document.getElementById('myPeerId').textContent = "Gerando...";
+        statusMsg.textContent = "Conectando ao servidor online...";
+
+        peer = new Peer(shortId, {
+            config: {
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' },
+                    { urls: 'stun:stun2.l.google.com:19302' }
+                ]
+            }
+        });
 
         peer.on('open', (id) => {
             document.getElementById('myPeerId').textContent = id;
+            statusMsg.textContent = "Sala pronta! Envie o código ou cole o do colega.";
         });
 
-        // Quando o colega se conecta a você (Você joga com as Brancas)
+        peer.on('error', (err) => {
+            statusMsg.textContent = "Erro na sala (" + err.type + "). Tente novamente.";
+        });
+
+        // Quando o colega entra na sua sala (Você = Brancas)
         peer.on('connection', (connection) => {
             conn = connection;
             myOnlineColor = 'w';
+            statusMsg.textContent = "Colega conectando...";
             setupConnectionHandlers();
-            statusMsg.textContent = "Colega conectado! Você é as Brancas.";
-            startNewGame(true);
         });
     }
 
-    // Quando você se conecta ao colega (Você joga com as Pretas)
+    // Quando você entra na sala do colega (Você = Pretas)
     function connectToFriend() {
         const friendId = document.getElementById('friendIdInput').value.trim().toUpperCase();
-        if (!friendId || !peer) return;
-        conn = peer.connect(friendId);
+        if (!friendId) {
+            statusMsg.textContent = "Digite o código do colega primeiro!";
+            return;
+        }
+        if (!peer || peer.disconnected) {
+            initOnlinePeer();
+            setTimeout(() => connectToFriend(), 1500);
+            return;
+        }
+        statusMsg.textContent = "Entrando na sala " + friendId + "...";
+        conn = peer.connect(friendId, { reliable: true });
         myOnlineColor = 'b';
         setupConnectionHandlers();
-        statusMsg.textContent = "Conectado! Você joga com as Pretas.";
     }
 
     function setupConnectionHandlers() {
         conn.on('open', () => {
             if (myOnlineColor === 'b') {
+                statusMsg.textContent = "Conectado! Iniciando partida...";
                 conn.send({ type: 'ready' });
+            } else {
+                statusMsg.textContent = "Colega entrou! Você é as Brancas.";
+                startNewGame(true);
             }
         });
 
@@ -197,12 +223,23 @@
                 executeMove(data.fromR, data.fromC, data.toR, data.toC, true);
             }
         });
+
+        conn.on('close', () => {
+            statusMsg.textContent = "O colega desconectou da sala.";
+            gameActive = false;
+        });
+
+        conn.on('error', (err) => {
+            statusMsg.textContent = "Falha na conexão com o colega.";
+        });
     }
 
     function copyCode() {
         const code = document.getElementById('myPeerId').textContent;
-        navigator.clipboard.writeText(code);
-        alert("Código copiado: " + code + "\nEnvie no WhatsApp para seu colega!");
+        if (code.includes('XAD-')) {
+            navigator.clipboard.writeText(code);
+            alert("Código copiado: " + code + "\nEnvie no WhatsApp para seu colega!");
+        }
     }
 
     gameModeSelect.addEventListener('change', () => {
@@ -320,8 +357,8 @@
         if (!piece) return [];
         const isWhite = piece === piece.toUpperCase();
         const moves = [];
-        const straightDirs = [[-1,0], [1,0], [0,-1], [0,1]];
-        const diagDirs = [[-1,-1], [-1,1], [1,-1], [1,1]];
+        const straightDirs = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+        const diagDirs = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
         const allDirs = straightDirs.concat(diagDirs);
 
         function addSlideMoves(dirs) {
@@ -344,7 +381,7 @@
             const dir = isWhite ? -1 : 1, startRow = isWhite ? 6 : 1;
             if (r + dir >= 0 && r + dir < 8 && !boardState[r + dir][c]) {
                 moves.push({r: r + dir, col: c});
-                if (r === startRow && !boardState[r + 2*dir][c]) moves.push({r: r + 2*dir, col: c});
+                if (r === startRow && !boardState[r + 2 * dir][c]) moves.push({r: r + 2 * dir, col: c});
             }
             for (let dc of [-1, 1]) {
                 let nr = r + dir, nc = c + dc;
@@ -353,7 +390,7 @@
                 }
             }
         } else if (type === 'n') {
-            for (let m of [[-2,-1], [-2,1], [-1,-2], [-1,2], [1,-2], [1,2], [2,-1], [2,1]]) {
+            for (let m of [[-2, -1], [-2, 1], [-1, -2], [-1, 2], [1, -2], [1, 2], [2, -1], [2, 1]]) {
                 let nr = r + m[0], nc = c + m[1];
                 if (nr >= 0 && nr < 8 && nc >= 0 && nc < 8) {
                     const target = boardState[nr][nc];
